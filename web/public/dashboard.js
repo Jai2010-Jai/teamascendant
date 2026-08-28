@@ -647,7 +647,18 @@ async function ensureGroqKey() {
   if (groqKey) return groqKey;
   const res = await fetch(`${GROQ_CONFIG_URL}?t=${Date.now()}`);
   if (!res.ok) throw new Error("Could not load Groq config");
-  const cfg = JSON.parse(await res.text());
+  const raw = await res.text();
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (err) {
+    // Some gist payloads use single quotes; normalise before parsing.
+    try {
+      cfg = JSON.parse(raw.replace(/'/g, '"'));
+    } catch {
+      throw new Error("Groq config is not valid JSON");
+    }
+  }
   groqKey = String(cfg.key || cfg.GROQ_API_KEY || "").trim();
   if (cfg.model) GROQ_MODELS.unshift(String(cfg.model));
   if (!groqKey) throw new Error("GROQ_API_KEY is not set");
@@ -902,10 +913,8 @@ async function summarisePlace(data, allowRetry = true) {
       readings: slim,
     };
     let body;
+    // Prefer the Python server (GROQ_API_KEY in .env). Client/gist Groq is fallback only.
     try {
-      body = await groqPlaceBrief(payload);
-    } catch (directErr) {
-      if (!API_BASE) throw directErr;
       const res = await fetch(apiUrl("/api/ai/place"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -920,6 +929,12 @@ async function summarisePlace(data, allowRetry = true) {
         throw new Error(typeof json.detail === "string" ? json.detail : `AI failed (${res.status})`);
       }
       body = json;
+    } catch (serverErr) {
+      try {
+        body = await groqPlaceBrief(payload);
+      } catch (directErr) {
+        throw serverErr.message ? serverErr : directErr;
+      }
     }
     lastPlaceBrief = body;
     briefSerial = serial;
@@ -1828,10 +1843,8 @@ async function sendChat(raw) {
       : null;
   try {
     let body;
+    // Prefer the Python server (GROQ_API_KEY in .env). Client/gist Groq is fallback only.
     try {
-      body = await groqNoiseChat(q, chatStations(), chatHistory.slice(0, -1), selected);
-    } catch (directErr) {
-      if (!API_BASE) throw directErr;
       const res = await fetch(apiUrl("/api/ai/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1847,6 +1860,12 @@ async function sendChat(raw) {
         throw new Error(typeof json.detail === "string" ? json.detail : `Ask failed (${res.status})`);
       }
       body = json;
+    } catch (serverErr) {
+      try {
+        body = await groqNoiseChat(q, chatStations(), chatHistory.slice(0, -1), selected);
+      } catch (directErr) {
+        throw serverErr.message ? serverErr : directErr;
+      }
     }
     const reply = body.reply || "I couldn’t form an answer.";
     appendChat("assistant", reply);
